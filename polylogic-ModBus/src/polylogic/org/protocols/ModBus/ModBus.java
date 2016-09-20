@@ -25,8 +25,9 @@ public class ModBus {
 
 	/**
 	 * This library generates typical requests for Modbus protocol. Currently
-	 * Modbus RTU, Modbus TCP(UDP) and Modbus over TCP(UDP) are supported.
-	 * Support for Modbus ASCII will be added soon.
+	 * Modbus RTU, Modbus TCP(UDP), Modbus over TCP(UDP) and Modbus ASCII are
+	 * supported. CRC and LRC calculators and checkers are also implemented.
+	 * Console (CLI) version is provided as example of library usage.
 	 *
 	 * Additionally library can apply or check CRC (CRC-16-ANSI for now, LRC CRC
 	 * will be added soon) for both Modbus requests and replies.
@@ -579,6 +580,45 @@ public class ModBus {
 		sum *= -1; // and then make it negative
 		commandWithLRC[commandWithLRC.length - 1] = (byte) sum;
 		return commandWithLRC;
+	}
+
+	public static boolean checkCRC(byte[] reply) {
+		if (reply == null || reply.length < 4) {
+			// minimal content is addr+value+crc1+crc2
+			return false;
+		} else {
+			byte[] replyCore = new byte[reply.length - 2];
+			for (int i = 0; i < reply.length - 2; i++) {
+				//minus 2 crc bytes
+				replyCore[i] = reply[i];
+			}
+			byte[] replyWithGoodCRC = applyCRC(replyCore);
+			if (replyWithGoodCRC[replyWithGoodCRC.length - 2] == reply[reply.length - 2]
+					&& replyWithGoodCRC[replyWithGoodCRC.length - 1] == reply[reply.length - 1]) {
+				return true;
+			} else {
+				return false;
+			}
+		}
+	}
+
+	public static boolean checkLRC(byte[] reply) {
+		if (reply == null || reply.length < 6) { 
+			// minimal content is ':'+addr+value+lrc+cr+lf
+			return false;
+		} else {
+			byte[] replyCore = new byte[reply.length - 3]; 
+			// we don't need cr, lf and ':'
+			for (int i = 0; i < reply.length - 3; i++) {
+				replyCore[i] = reply[i+1];
+			}
+			byte[] replyWithGoodLRC = applyLRC(replyCore);
+			if (replyWithGoodLRC[replyWithGoodLRC.length - 1] == reply[reply.length - 1]) {
+				return true;
+			} else {
+				return false;
+			}
+		}
 	}
 
 	/**
