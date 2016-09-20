@@ -70,6 +70,53 @@ public class ModBus {
 	public static final int MODBUS_TYPE_ASCII = 4;
 
 	/**
+	 * Function code received in the query is not recognized or allowed by slave
+	 */
+	public static final int RESPONSE_Illegal_Function = 1;
+	/**
+	 * Data address of some or all the required entities are not allowed or do
+	 * not exist in slave
+	 */
+	public static final int RESPONSE_Illegal_Data_Address = 2;
+	/** Value is not accepted by slave */
+	public static final int RESPONSE_Illegal_Data_Value = 3;
+	/**
+	 * Unrecoverable error occurred while slave was attempting to perform
+	 * requested action
+	 */
+	public static final int RESPONSE_Slave_Device_Failure = 4;
+	/**
+	 * Slave has accepted request and is processing it, but a long duration of
+	 * time is required. This response is returned to prevent a timeout error
+	 * from occurring in the master. Master can next issue a Poll Program
+	 * Complete message to determine if processing is completed
+	 */
+	public static final int RESPONSE_Acknowledge = 5;
+	/**
+	 * Slave is engaged in processing a long-duration command. Master should
+	 * retry later
+	 */
+	public static final int RESPONSE_Slave_Device_Busy = 6;
+	/**
+	 * Slave cannot perform the programming functions. Master should request
+	 * diagnostic or error information from slave
+	 */
+	public static final int RESPONSE_Negative_Acknowledge = 7;
+	/**
+	 * Slave detected a parity error in memory. Master can retry the request,
+	 * but service may be required on the slave device
+	 */
+	public static final int RESPONSE_Memory_Parity_Error = 8;
+	/** Specialized for Modbus gateways. Indicates a misconfigured gateway */
+	public static final int RESPONSE_Gateway_Path_Unavailable = 10;
+	/** Specialized for Modbus gateways. Sent when slave fails to respond */
+	public static final int RESPONSE_Gateway_Target_Device_Failed_to_Respond = 11;
+	/** CRC in reply was faulty - probably data was broken on the way */
+	public static final int RESPONSE_CRC_ERROR = 100;
+	/** Reply don't have data at all or data in insufficient */
+	public static final int RESPONSE_NO_DATA = 101;
+
+	/**
 	 * <p>
 	 * Read coils values (Modbus function code: 1)
 	 * </p>
@@ -582,6 +629,58 @@ public class ModBus {
 		return commandWithLRC;
 	}
 
+	/**
+	 * Checks provided device reply for errors: overall validity, exception
+	 * codes and CRC/LRC errors
+	 * 
+	 * @param reply
+	 *            whole reply from device
+	 * @param modbusType
+	 *            defines Modbus ADU type, device is operating on.
+	 * @return 0 if no errors where found, or error response code.
+	 */
+	public static int checkReply(byte[] reply, int modbusType) {
+		if (reply == null || reply.length < 3
+				|| ((modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) && reply.length < 4)
+				|| (modbusType == MODBUS_TYPE_ASCII && reply.length < 6)) {
+			// minimal content is addr+value+crc1+crc2
+			return RESPONSE_NO_DATA;
+		} else {
+			if (reply[1] > 128) { // If reply's 2nd byte is function+128
+				return reply[2]; // then reply's 3rd byte contains exception
+									// code
+			} else {
+				if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
+					if (checkCRC(reply)) {
+						return 0;
+					} else {
+						return RESPONSE_CRC_ERROR;
+					}
+				} else if (modbusType == MODBUS_TYPE_ASCII) {
+					if (reply[0] == 0x3a) {
+						if (checkLRC(reply)) {
+							return 0;
+						} else {
+							return RESPONSE_CRC_ERROR;
+						}
+					} else {
+						return RESPONSE_NO_DATA;
+					}
+				} else {
+					return 0;
+				}
+			}
+		}
+	}
+
+	/**
+	 * Checks whether provided reply contains valid CRC
+	 * 
+	 * @param reply
+	 *            device reply to check
+	 * 
+	 * @return true if CRC is valid, false if CRC is not valid
+	 */
 	public static boolean checkCRC(byte[] reply) {
 		if (reply == null || reply.length < 4) {
 			// minimal content is addr+value+crc1+crc2
@@ -589,7 +688,7 @@ public class ModBus {
 		} else {
 			byte[] replyCore = new byte[reply.length - 2];
 			for (int i = 0; i < reply.length - 2; i++) {
-				//minus 2 crc bytes
+				// minus 2 crc bytes
 				replyCore[i] = reply[i];
 			}
 			byte[] replyWithGoodCRC = applyCRC(replyCore);
@@ -602,15 +701,23 @@ public class ModBus {
 		}
 	}
 
+	/**
+	 * Checks whether provided ASCII reply contains valid LRC
+	 * 
+	 * @param reply
+	 *            device reply to check
+	 * 
+	 * @return true if LRC is valid, false if LRC is not valid
+	 */
 	public static boolean checkLRC(byte[] reply) {
-		if (reply == null || reply.length < 6) { 
+		if (reply == null || reply.length < 6) {
 			// minimal content is ':'+addr+value+lrc+cr+lf
 			return false;
 		} else {
-			byte[] replyCore = new byte[reply.length - 3]; 
+			byte[] replyCore = new byte[reply.length - 3];
 			// we don't need cr, lf and ':'
 			for (int i = 0; i < reply.length - 3; i++) {
-				replyCore[i] = reply[i+1];
+				replyCore[i] = reply[i + 1];
 			}
 			byte[] replyWithGoodLRC = applyLRC(replyCore);
 			if (replyWithGoodLRC[replyWithGoodLRC.length - 1] == reply[reply.length - 1]) {
