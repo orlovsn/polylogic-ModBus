@@ -18,6 +18,7 @@
 package polylogic.org.protocols.ModBus;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import polylogic.org.protocols.ANSI.CRC16ANSI;
 
@@ -54,26 +55,75 @@ import polylogic.org.protocols.ANSI.CRC16ANSI;
 public class ModBus {
 
     /**
+     * Basically this library carries one identificator and increases it with
+     * every call to convertToTCP (internally called in every command generator,
+     * when Modbus type is set to Modbus-TCP/UDP). So if you have multiple
+     * Modbus-TCP/UDP devices, they will share this id (for example if you have
+     * 3 devices, that are requested in order, then first packet to device1 will
+     * have id 1, packet to device2 will have id 2, packet to device3 will have
+     * id 3). In most cases this works ok because device, due to Modbus
+     * standard, don't perfom id check and only copies it in reply, but if you
+     * want separate ids for each device, you have to implement your own list of
+     * device addresses and take care of exact id increment every time you
+     * prepare a command for device, then you can force id with setTcpID
+     * function (note that tcpID is static, so if you have multiple threads you
+     * have to synchronize your double-call transaction - first set id, than
+     * generate command) or you can simply overwrite id with your own in
+     * generated command.
+     */
+    public static int tcpID = 0;
+
+    /**
      * Modbus RTU Type with CRC-16-ANSI
      */
-    public static final int MODBUS_TYPE_RTU = 1;
+    public static final int TYPE_MODBUS_RTU = 1;
 
     /**
      * Modbus TCP or Modbus UDP Type (TCP and UDP use the same ADU) without CRC
      * in request. Don't mess with Modbus <b>over</b> TCP which requires CRC!
+     * This type handles MBAP+PDU, where MBAP Unit Identifier is set as
+     * deviceAddress.
+     * <b>IMPORTANT</b> MODBUS MESSAGING ON TCP/IP IMPLEMENTATION GUIDE V1.0b
+     * says that: <i>"All MODBUS requests and responses are designed in such a
+     * way that the recipient can verify that a message is finished. For
+     * function codes where the MODBUS PDU has a fixed length, the function code
+     * alone is <b>sufficient</b>. For function codes carrying a variable amount
+     * of data in the request or response, the data field includes a byte
+     * count."</i> When setting TYPE_MODBUS_TCP_UDP type, all generated
+     * functions WILL contain length (because most devices will fail if basic
+     * MBAP is ruined). If your device fails with byte count in MBAP for
+     * fixed-length commands, then use TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS
+     * type.
      */
-    public static final int MODBUS_TYPE_TCP = 2;
+    public static final int TYPE_MODBUS_TCP_UDP = 2;
 
     /**
      * Modbus over TCP or Modbus <b>over</b> UDP Type with CRC-16-ANSI. Don't
      * mess with Modbus TCP which doesn't require CRC!
      */
-    public static final int MODBUS_TYPE_OVER_TCP = 3;
+    public static final int TYPE_MODBUS_OVER_TCP = 3;
 
     /**
      * Modbus ASCII with LRC CRC
      */
-    public static final int MODBUS_TYPE_ASCII = 4;
+    public static final int TYPE_MODBUS_ASCII = 4;
+
+    /**
+     * Modbus TCP or Modbus UDP Type (TCP and UDP use the same ADU) without CRC
+     * in request and without REQUEST LENGTH field in functions, that have
+     * fixed-length answer. <b>IMPORTANT</b> MODBUS MESSAGING ON TCP/IP
+     * IMPLEMENTATION GUIDE V1.0b says that: <i>"All MODBUS requests and
+     * responses are designed in such a way that the recipient can verify that a
+     * message is finished. For function codes where the MODBUS PDU has a fixed
+     * length, the function code alone is <b>sufficient</b>. For function codes
+     * carrying a variable amount of data in the request or response, the data
+     * field includes a byte count."</i>
+     * So looks like there are devices (I have never met them, but standard is
+     * standard) that may fail if you provide REQUEST LENGTH in request, so you
+     * should provide this type of Modbus for command generators in case you
+     * have such a device.
+     */
+    public static final int TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS = 5;
 
     /**
      * Function code received in the query is not recognized or allowed by slave
@@ -139,7 +189,7 @@ public class ModBus {
      * <p>
      * For example to read value of 3 coils starting from coil 2 in device with
      * address 10 in RTU format write: readValueOfCoils(10, 2, 3,
-     * MODBUS_TYPE_RTU);
+     * TYPE_MODBUS_RTU);
      * </p>
      *
      * @param deviceAddress Address of device where command will be executed
@@ -160,15 +210,8 @@ public class ModBus {
      * @return Prepared to execute command.
      */
     public static byte[] readValueOfCoils(byte deviceAddress, int firstCoilAddress, int numberOfCoils, int modbusType) {
-        if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
-            return applyCRC(prepareRTU6ByteCommand(deviceAddress, (byte) 1, firstCoilAddress, numberOfCoils));
-        } else if (modbusType == MODBUS_TYPE_TCP) {
-            return prepareRTU6ByteCommand(deviceAddress, (byte) 1, firstCoilAddress, numberOfCoils);
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
-            return convertToASCII(prepareRTU6ByteCommand(deviceAddress, (byte) 1, firstCoilAddress, numberOfCoils));
-        } else {
-            throw new UnsupportedOperationException("Not implemented yet");
-        }
+        byte[] command = prepareRTU6ByteCommand(deviceAddress, (byte) 1, firstCoilAddress, numberOfCoils);
+        return convertCommandToModbusType(command, modbusType);
     }
 
     /**
@@ -183,7 +226,7 @@ public class ModBus {
      * <p>
      * For example to read value of 3 inputs starting from input 10002 in device
      * with address 10 in RTU format write: readValueOfInputs(10, 1, 3,
-     * MODBUS_TYPE_RTU);
+     * TYPE_MODBUS_RTU);
      * </p>
      *
      * @param deviceAddress Address of device where command will be executed
@@ -205,15 +248,8 @@ public class ModBus {
      */
     public static byte[] readValueOfInputs(byte deviceAddress, int firstInputAddress, int numberOfInputs,
             int modbusType) {
-        if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
-            return applyCRC(prepareRTU6ByteCommand(deviceAddress, (byte) 2, firstInputAddress, numberOfInputs));
-        } else if (modbusType == MODBUS_TYPE_TCP) {
-            return prepareRTU6ByteCommand(deviceAddress, (byte) 2, firstInputAddress, numberOfInputs);
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
-            return convertToASCII(prepareRTU6ByteCommand(deviceAddress, (byte) 2, firstInputAddress, numberOfInputs));
-        } else {
-            throw new UnsupportedOperationException("Not implemented yet");
-        }
+        byte[] command = prepareRTU6ByteCommand(deviceAddress, (byte) 2, firstInputAddress, numberOfInputs);
+        return convertCommandToModbusType(command, modbusType);
     }
 
     /**
@@ -229,7 +265,7 @@ public class ModBus {
      * <p>
      * For example to read value of 3 holding registers starting from register
      * 40002 in device with address 10 in RTU format write:
-     * readValueOfHoldingRegisters(10, 1, 3, MODBUS_TYPE_RTU);
+     * readValueOfHoldingRegisters(10, 1, 3, TYPE_MODBUS_RTU);
      * </p>
      *
      * @param deviceAddress Address of device where command will be executed
@@ -251,16 +287,8 @@ public class ModBus {
      */
     public static byte[] readValueOfHoldingRegisters(byte deviceAddress, int firstRegisterAddress,
             int numberOfRegisters, int modbusType) {
-        if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
-            return applyCRC(prepareRTU6ByteCommand(deviceAddress, (byte) 3, firstRegisterAddress, numberOfRegisters));
-        } else if (modbusType == MODBUS_TYPE_TCP) {
-            return prepareRTU6ByteCommand(deviceAddress, (byte) 3, firstRegisterAddress, numberOfRegisters);
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
-            return convertToASCII(
-                    prepareRTU6ByteCommand(deviceAddress, (byte) 3, firstRegisterAddress, numberOfRegisters));
-        } else {
-            throw new UnsupportedOperationException("Not implemented yet");
-        }
+        byte[] command = prepareRTU6ByteCommand(deviceAddress, (byte) 3, firstRegisterAddress, numberOfRegisters);
+        return convertCommandToModbusType(command, modbusType);
     }
 
     /**
@@ -275,7 +303,7 @@ public class ModBus {
      * <p>
      * For example to read value of 3 input registers starting from register
      * 30002 in device with address 10 in RTU format write:
-     * readValueOfInputRegisters(10, 1, 3, MODBUS_TYPE_RTU);
+     * readValueOfInputRegisters(10, 1, 3, TYPE_MODBUS_RTU);
      * </p>
      *
      * @param deviceAddress Address of device where command will be executed
@@ -297,16 +325,8 @@ public class ModBus {
      */
     public static byte[] readValueOfInputRegisters(byte deviceAddress, int firstRegisterAddress, int numberOfRegisters,
             int modbusType) {
-        if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
-            return applyCRC(prepareRTU6ByteCommand(deviceAddress, (byte) 4, firstRegisterAddress, numberOfRegisters));
-        } else if (modbusType == MODBUS_TYPE_TCP) {
-            return prepareRTU6ByteCommand(deviceAddress, (byte) 4, firstRegisterAddress, numberOfRegisters);
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
-            return convertToASCII(
-                    prepareRTU6ByteCommand(deviceAddress, (byte) 4, firstRegisterAddress, numberOfRegisters));
-        } else {
-            throw new UnsupportedOperationException("Not implemented yet");
-        }
+        byte[] command = prepareRTU6ByteCommand(deviceAddress, (byte) 4, firstRegisterAddress, numberOfRegisters);
+        return convertCommandToModbusType(command, modbusType);
     }
 
     /**
@@ -315,7 +335,7 @@ public class ModBus {
      * </p>
      * <p>
      * For example to write value 70 in coil 2 of device with address 10 in RTU
-     * format write: writeValueOfSingleCoil(10, 2, 70, MODBUS_TYPE_RTU);
+     * format write: writeValueOfSingleCoil(10, 2, 70, TYPE_MODBUS_RTU);
      * </p>
      *
      * @param deviceAddress Address of Device where command will be executed
@@ -338,15 +358,8 @@ public class ModBus {
      * @return Prepared to execute command.
      */
     public static byte[] writeValueOfSingleCoil(byte deviceAddress, int coilAddress, int newCoilValue, int modbusType) {
-        if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
-            return applyCRC(prepareRTU6ByteCommand(deviceAddress, (byte) 5, coilAddress, newCoilValue));
-        } else if (modbusType == MODBUS_TYPE_TCP) {
-            return prepareRTU6ByteCommand(deviceAddress, (byte) 5, coilAddress, newCoilValue);
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
-            return convertToASCII(prepareRTU6ByteCommand(deviceAddress, (byte) 5, coilAddress, newCoilValue));
-        } else {
-            throw new UnsupportedOperationException("Not implemented yet");
-        }
+        byte[] command = prepareRTU6ByteCommand(deviceAddress, (byte) 5, coilAddress, newCoilValue);
+        return convertCommandToModbusType(command, modbusType);
     }
 
     /**
@@ -362,7 +375,7 @@ public class ModBus {
      * <p>
      * For example to write value 70 in holding register 40002 of device with
      * address 10 in RTU format write: writeValueOfSingleHoldingRegister(10, 1,
-     * 70, MODBUS_TYPE_RTU);
+     * 70, TYPE_MODBUS_RTU);
      * </p>
      *
      * @param deviceAddress Address of Device where command will be executed
@@ -385,15 +398,8 @@ public class ModBus {
      */
     public static byte[] writeValueOfSingleHoldingRegister(byte deviceAddress, int registerAddress,
             int newRegisterValue, int modbusType) {
-        if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
-            return applyCRC(prepareRTU6ByteCommand(deviceAddress, (byte) 6, registerAddress, newRegisterValue));
-        } else if (modbusType == MODBUS_TYPE_TCP) {
-            return prepareRTU6ByteCommand(deviceAddress, (byte) 6, registerAddress, newRegisterValue);
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
-            return convertToASCII(prepareRTU6ByteCommand(deviceAddress, (byte) 6, registerAddress, newRegisterValue));
-        } else {
-            throw new UnsupportedOperationException("Not implemented yet");
-        }
+        byte[] command = prepareRTU6ByteCommand(deviceAddress, (byte) 6, registerAddress, newRegisterValue);
+        return convertCommandToModbusType(command, modbusType);
     }
 
     /**
@@ -445,15 +451,7 @@ public class ModBus {
             command[7 + (regNum * 2)] = (byte) ((newRegistersValues.get(regNum) >> 8) & 0xFF);
             command[7 + (regNum * 2) + 1] = (byte) (newRegistersValues.get(regNum) & 0xFF);
         }
-        if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
-            return applyCRC(command);
-        } else if (modbusType == MODBUS_TYPE_TCP) {
-            return command;
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
-            return convertToASCII(command);
-        } else {
-            throw new UnsupportedOperationException("Not implemented yet");
-        }
+        return convertCommandToModbusType(command, modbusType);
     }
 
     /**
@@ -510,15 +508,7 @@ public class ModBus {
                 }
             }
         }
-        if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
-            return applyCRC(command);
-        } else if (modbusType == MODBUS_TYPE_TCP) {
-            return command;
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
-            return convertToASCII(command);
-        } else {
-            throw new UnsupportedOperationException("Not implemented yet");
-        }
+        return convertCommandToModbusType(command, modbusType);
     }
 
     /**
@@ -605,20 +595,20 @@ public class ModBus {
      */
     public static int checkReply(byte[] reply, int modbusType) {
         if (reply == null || reply.length < 3
-                || ((modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) && reply.length < 4)
-                || (modbusType == MODBUS_TYPE_ASCII && reply.length < 6)) {
+                || ((modbusType == TYPE_MODBUS_RTU || modbusType == TYPE_MODBUS_OVER_TCP) && reply.length < 4)
+                || (modbusType == TYPE_MODBUS_ASCII && reply.length < 6)) {
             // minimal content is addr+value+crc1+crc2
             return RESPONSE_NO_DATA;
         } else if (reply[1] > 128) { // If reply's 2nd byte > 128 (128+function code)
             return reply[2]; // then reply's 3rd byte contains exception
             // code
-        } else if (modbusType == MODBUS_TYPE_RTU || modbusType == MODBUS_TYPE_OVER_TCP) {
+        } else if (modbusType == TYPE_MODBUS_RTU || modbusType == TYPE_MODBUS_OVER_TCP) {
             if (checkCRC(reply)) {
                 return 0;
             } else {
                 return RESPONSE_CRC_ERROR;
             }
-        } else if (modbusType == MODBUS_TYPE_ASCII) {
+        } else if (modbusType == TYPE_MODBUS_ASCII) {
             if (reply[0] == 0x3a) {
                 if (checkLRC(reply)) {
                     return 0;
@@ -661,17 +651,9 @@ public class ModBus {
             // minimal content is ':'+addr+value+lrc+cr+lf
             return false;
         } else {
-            byte[] replyCore = new byte[reply.length - 3];
-            // we don't need cr, lf and ':'
-            for (int i = 0; i < reply.length - 3; i++) {
-                replyCore[i] = reply[i + 1];
-            }
+            byte[] replyCore = Arrays.copyOfRange(reply, 1, reply.length - 3); //cut ':', LRC, cr and lf
             byte[] replyWithGoodLRC = applyLRC(replyCore);
-            if (replyWithGoodLRC[replyWithGoodLRC.length - 1] == reply[reply.length - 1]) {
-                return true;
-            } else {
-                return false;
-            }
+            return Arrays.equals(reply, replyWithGoodLRC);
         }
     }
 
@@ -700,6 +682,184 @@ public class ModBus {
         commandASCII[commandASCII.length - 2] = 0x0d;
         commandASCII[commandASCII.length - 1] = 0x0a;
         return commandASCII;
+    }
+
+    /**
+     * Adds MBAP Header to provided prepared command. Unit Identifier is taken
+     * from deviceAddress field of command. Note that this function allways sets
+     * CONTENT LENGTH field in MBAP. If you don't need this field for
+     * fixed-length commands, then use convertToTCPNoFixedLength instead. For
+     * more information see descriptions of TYPE_MODBUS_TCP_UDP and
+     * TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS
+     *
+     * @param preparedCommand command to add MBAP to
+     * @return MBAP header + command
+     */
+    public static byte[] convertToTCP(byte[] preparedCommand) {
+        tcpID++;
+        byte[] packetN = new byte[2];
+        packetN[1] = (byte) (tcpID & 0xFF);
+        packetN[0] = (byte) ((tcpID >> 8) & 0xFF);
+        int lengthInt = preparedCommand.length;
+        byte[] length = new byte[2];
+        length[1] = (byte) (lengthInt & 0xFF);
+        length[0] = (byte) ((lengthInt >> 8) & 0xFF);
+        byte[] commandWithMBAP = new byte[preparedCommand.length + 6];
+        commandWithMBAP[0] = packetN[0]; //Set transaction ID
+        commandWithMBAP[1] = packetN[1];
+        commandWithMBAP[2] = 0x00; //Set Modbus proto ID=0
+        commandWithMBAP[3] = 0x00;
+        commandWithMBAP[4] = length[0]; //Set command length
+        commandWithMBAP[5] = length[1];
+        System.arraycopy(preparedCommand, 0, commandWithMBAP, 6, preparedCommand.length);
+        return commandWithMBAP;
+    }
+
+    /**
+     * Adds MBAP Header to provided prepared command. Unit Identifier is taken
+     * from deviceAddress field of command. Note that this function sets CONTENT
+     * LENGTH field in MBAP only for variable-length commands or commands with
+     * variable length responses (Actually all but 5 and 6 function codes). If
+     * you need this field for every command, then use convertToTCP instead. For
+     * more information see descriptions of TYPE_MODBUS_TCP_UDP and
+     * TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS
+     *
+     * @param preparedCommand command to add MBAP to
+     * @return MBAP header + command
+     */
+    public static byte[] convertToTCPNoFixedLength(byte[] preparedCommand) {
+        if (preparedCommand[1] == 5 || preparedCommand[1] == 6) {
+            tcpID++;
+            byte[] packetN = new byte[2];
+            packetN[1] = (byte) (tcpID & 0xFF);
+            packetN[0] = (byte) ((tcpID >> 8) & 0xFF);
+            byte[] commandWithMBAP = new byte[preparedCommand.length + 4];
+            commandWithMBAP[0] = packetN[0]; //Set transaction ID
+            commandWithMBAP[1] = packetN[1];
+            commandWithMBAP[2] = 0x00; //Set Modbus proto ID=0
+            commandWithMBAP[3] = 0x00;
+            System.arraycopy(preparedCommand, 0, commandWithMBAP, 4, preparedCommand.length);
+            return commandWithMBAP;
+        } else {
+            return convertToTCP(preparedCommand);
+        }
+
+    }
+
+    /**
+     * Strips device reply to data only, removing device address, function code,
+     * CRC and TCP/UDP or ASCII overhead. NOTE Null will be returned if there
+     * was an error code or reply was too short.
+     *
+     * @param reply Full reply from device
+     * @param typeModbus Type of Modbus ADU
+     * @return Only data (without device address, function code, CRC and TCP/UDP
+     * or ASCII overhead) OR null if there was an error code or reply was too
+     * short
+     */
+    public static byte[] stripReplyToDATA(byte[] reply, int typeModbus) {
+        byte[] strippedPDU = stripReplyToPDU(reply, typeModbus);
+        if (strippedPDU != null && strippedPDU.length > 1 && strippedPDU[1] < 128) {
+            byte[] strippedData = Arrays.copyOfRange(strippedPDU, 2, strippedPDU.length);
+            return strippedData;
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * Strips device reply to address + PDU, removing CRC and TCP/UDP or ASCII
+     * overhead.
+     *
+     * @param reply Full reply from device
+     * @param typeModbus Type of Modbus ADU
+     * @return address + PDU without CRC and TCP/UDP or ASCII overhead.
+     */
+    public static byte[] stripReplyToPDU(byte[] reply, int typeModbus) {
+        if (typeModbus == TYPE_MODBUS_TCP_UDP && reply != null && reply.length > 6) {
+            byte[] stripped = Arrays.copyOfRange(reply, 6, reply.length);
+            return stripped;
+        } else if (typeModbus == TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS && reply != null) {
+            if (reply.length > 7 && (reply[7] == 1 || reply[7] == 2 || reply[7] == 3 || reply[7] == 4 || reply[7] == 15 || reply[7] == 16)) {
+                byte[] stripped = Arrays.copyOfRange(reply, 6, reply.length);
+                return stripped;
+            } else if (reply.length > 5 && (reply[5] == 5 || reply[5] == 6)) {
+                byte[] stripped = Arrays.copyOfRange(reply, 4, reply.length);
+                return stripped;
+            } else {
+                return null;
+            }
+        } else if (typeModbus == TYPE_MODBUS_RTU && reply != null && reply.length > 2) {
+            byte[] stripped = Arrays.copyOfRange(reply, 0, reply.length - 2);
+            return stripped;
+        } else if (typeModbus == TYPE_MODBUS_OVER_TCP && reply != null && reply.length > 8) {
+            byte[] stripped = Arrays.copyOfRange(reply, 6, reply.length - 2);
+            return stripped;
+        } else if (typeModbus == TYPE_MODBUS_ASCII && reply != null && reply.length > 4) {
+            byte[] stripped = Arrays.copyOfRange(reply, 1, reply.length - 3);
+            return stripped;
+        } else {
+            return null;
+        }
+    }
+
+    //NOT IMPLEMENTED YET
+//    public static List<Integer> getValuesFromReply(byte[] reply, int bytesInReg) {
+//        if (reply == null || reply.length < 5 || (reply[1] & 0xFF) > 128) {
+//            return null;
+//        } else {
+//            
+//            List<Integer> values = new ArrayList<>();
+//            return values;
+//        }
+//    }
+
+    /**
+     * @return Current Identification of a MODBUS Request transaction.
+     */
+    public static int getTcpID() {
+        return tcpID;
+    }
+
+    /**
+     * Basically this library carries one identificator and increases it with
+     * every call to convertToTCP (internally called in every command generator,
+     * when Modbus type is set to Modbus-TCP/UDP). So if you have multiple
+     * Modbus-TCP/UDP devices, they will share this id (for example if you have
+     * 3 devices, that are requested in order, then first packet to device1 will
+     * have id 1, packet to device2 will have id 2, packet to device3 will have
+     * id 3). In most cases this works ok because device, due to Modbus
+     * standard, don't perfom id check and only copies it in reply, but if you
+     * want separate ids for each device, you have to implement your own list of
+     * device addresses and take care of exact id increment every time you
+     * prepare a command for device, then you can force id with this function
+     * (note that it is static, so if you have multiple threads you have to
+     * synchronize your double-call transaction - first set id, than generate
+     * command) or you can simply overwrite id with your own in generated
+     * command.
+     *
+     * @param tcpID New Identification of a MODBUS Request transaction for next
+     * generated command.
+     */
+    public static void setTcpID(int tcpID) {
+        ModBus.tcpID = tcpID;
+    }
+
+    public static byte[] convertCommandToModbusType(byte[] command, int modbusType) {
+        switch (modbusType) {
+            case TYPE_MODBUS_RTU:
+                return applyCRC(command);
+            case TYPE_MODBUS_TCP_UDP:
+                return convertToTCP(command);
+            case TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS:
+                return convertToTCPNoFixedLength(command);
+            case TYPE_MODBUS_OVER_TCP:
+                return convertToTCP(applyCRC(command));
+            case TYPE_MODBUS_ASCII:
+                return convertToASCII(command);
+            default:
+                throw new UnsupportedOperationException("Not implemented yet");
+        }
     }
 
     public static void main(String[] args) {
@@ -736,15 +896,18 @@ public class ModBus {
 
             byte[] result = null;
             if (command == 15) {
-                result = writeValueOfMultipleCoils(deviceAddress, address, values, MODBUS_TYPE_TCP);
+                result = writeValueOfMultipleCoils(deviceAddress, address, values, TYPE_MODBUS_RTU);
+                result = stripReplyToPDU(result, TYPE_MODBUS_RTU);
             } else if (command == 16) {
-                result = writeValueOfMultipleHoldingRegisters(deviceAddress, address, values, MODBUS_TYPE_TCP);
+                result = writeValueOfMultipleHoldingRegisters(deviceAddress, address, values, TYPE_MODBUS_RTU);
+                result = stripReplyToPDU(result, TYPE_MODBUS_RTU);
             } else {
                 result = prepareRTU6ByteCommand(deviceAddress, command, address, values.get(0));
             }
             StringBuilder sbHexTCP = new StringBuilder("TCP HEX: ");
             StringBuilder sbDecTCP = new StringBuilder("TCP DEC: ");
-            for (byte b : result) {
+            byte[] tcp = convertToTCP(result);
+            for (byte b : tcp) {
                 sbHexTCP.append(String.format("%02X ", b & 0xff));
                 sbDecTCP.append(String.format("%02d ", b & 0xff));
             }

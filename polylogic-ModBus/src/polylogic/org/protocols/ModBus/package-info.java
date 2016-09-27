@@ -16,7 +16,8 @@
  * 	 along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 /**
- * @author Stanislav Orlov
+ * @author Stanislav Orlov www.polylogic.org orlovsn@live.ru
+ * @version 1.0
  * 
  * This package contains basic ModBus functions generators, CRC calculator and CRC checker for RTU, TCP and ASCII ModBus realizations
  *
