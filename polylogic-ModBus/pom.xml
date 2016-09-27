@@ -1,0 +1,23 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.polylogic</groupId>
+  <artifactId>polylogic-ModBus</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <name>polylogic Modbus commands generator</name>
+  <description>Simple Modbus commands generator with support of Modbus RTU, Modbus TCP, Modbus UDP, Modbus over TCP and Modbus ASCII ADU variations.
+Contains CRC and LRC calculators and replies validity checker.
+CLI utility included to simplify basic commands generation on the fly.</description>
+  <build>
+    <sourceDirectory>src</sourceDirectory>
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.5.1</version>
+        <configuration>
+          <source>1.8</source>
+          <target>1.8</target>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
