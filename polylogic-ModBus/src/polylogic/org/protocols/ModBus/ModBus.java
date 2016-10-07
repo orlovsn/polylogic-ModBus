@@ -89,11 +89,7 @@ public class ModBus {
      * function codes where the MODBUS PDU has a fixed length, the function code
      * alone is <b>sufficient</b>. For function codes carrying a variable amount
      * of data in the request or response, the data field includes a byte
-     * count."</i> When setting TYPE_MODBUS_TCP_UDP type, all generated
-     * functions WILL contain length (because most devices will fail if basic
-     * MBAP is ruined). If your device fails with byte count in MBAP for
-     * fixed-length commands, then use TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS
-     * type.
+     * count."</i> This means that writing single coil or holding register must not contain length field.
      */
     public static final int TYPE_MODBUS_TCP_UDP = 2;
 
@@ -106,24 +102,7 @@ public class ModBus {
     /**
      * Modbus ASCII with LRC CRC
      */
-    public static final int TYPE_MODBUS_ASCII = 4;
-
-    /**
-     * Modbus TCP or Modbus UDP Type (TCP and UDP use the same ADU) without CRC
-     * in request and without REQUEST LENGTH field in functions, that have
-     * fixed-length answer. <b>IMPORTANT</b> MODBUS MESSAGING ON TCP/IP
-     * IMPLEMENTATION GUIDE V1.0b says that: <i>"All MODBUS requests and
-     * responses are designed in such a way that the recipient can verify that a
-     * message is finished. For function codes where the MODBUS PDU has a fixed
-     * length, the function code alone is <b>sufficient</b>. For function codes
-     * carrying a variable amount of data in the request or response, the data
-     * field includes a byte count."</i>
-     * So looks like there are devices (I have never met them, but standard is
-     * standard) that may fail if you provide REQUEST LENGTH in request, so you
-     * should provide this type of Modbus for command generators in case you
-     * have such a device.
-     */
-    public static final int TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS = 5;
+    public static final int TYPE_MODBUS_ASCII = 4;    
 
     /**
      * Function code received in the query is not recognized or allowed by slave
@@ -454,6 +433,20 @@ public class ModBus {
         return convertCommandToModbusType(command, modbusType);
     }
 
+    
+    public static byte[] writeValueOfMultipleHoldingRegisters(byte deviceAddress, int firstRegisterAddress,
+            byte[] newRegistersValues, int modbusType){
+        byte[] command = new byte[7 + (newRegistersValues.length)];
+        command[0] = deviceAddress;
+        command[1] = (byte) 16;
+        command[2] = (byte) ((firstRegisterAddress >> 8) & 0xFF);
+        command[3] = (byte) (firstRegisterAddress & 0xFF);
+        command[4] = (byte) (((newRegistersValues.length /2) >> 8) & 0xFF);
+        command[5] = (byte) (newRegistersValues.length /2 );
+        command[6] = (byte) (newRegistersValues.length & 0xFF);
+        System.arraycopy(newRegistersValues, 0, command, 7, newRegistersValues.length);
+        return convertCommandToModbusType(command, modbusType);
+    }
     /**
      * <p>
      * Writes values of multiple coils (Modbus function code: 15)
@@ -599,7 +592,7 @@ public class ModBus {
                 || (modbusType == TYPE_MODBUS_ASCII && reply.length < 6)) {
             // minimal content is addr+value+crc1+crc2
             return RESPONSE_NO_DATA;
-        } else if (reply[1] > 128) { // If reply's 2nd byte > 128 (128+function code)
+        } else if ((reply[1] & 0xFF) > 128) { // If reply's 2nd byte > 128 (128+function code)
             return reply[2]; // then reply's 3rd byte contains exception
             // code
         } else if (modbusType == TYPE_MODBUS_RTU || modbusType == TYPE_MODBUS_OVER_TCP) {
@@ -759,9 +752,16 @@ public class ModBus {
      */
     public static byte[] stripReplyToDATA(byte[] reply, int typeModbus) {
         byte[] strippedPDU = stripReplyToPDU(reply, typeModbus);
-        if (strippedPDU != null && strippedPDU.length > 1 && strippedPDU[1] < 128) {
-            byte[] strippedData = Arrays.copyOfRange(strippedPDU, 2, strippedPDU.length);
-            return strippedData;
+        if (strippedPDU != null && strippedPDU.length > 1 && (strippedPDU[1] & 0xff) < 128) {
+            if (strippedPDU[1]==5 || strippedPDU[1] ==6){
+                byte[] strippedData = Arrays.copyOfRange(strippedPDU, 2, strippedPDU.length);   
+                return strippedData;
+            } else if (strippedPDU.length>3){
+                byte[] strippedData = Arrays.copyOfRange(strippedPDU, 3, strippedPDU.length);   
+                return strippedData;
+            } else {
+                return null;
+            }           
         } else {
             return null;
         }
@@ -777,18 +777,19 @@ public class ModBus {
      */
     public static byte[] stripReplyToPDU(byte[] reply, int typeModbus) {
         if (typeModbus == TYPE_MODBUS_TCP_UDP && reply != null && reply.length > 6) {
-            byte[] stripped = Arrays.copyOfRange(reply, 6, reply.length);
-            return stripped;
-        } else if (typeModbus == TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS && reply != null) {
-            if (reply.length > 7 && (reply[7] == 1 || reply[7] == 2 || reply[7] == 3 || reply[7] == 4 || reply[7] == 15 || reply[7] == 16)) {
+//            if (reply.length > 7 && (reply[7] == 1 || reply[7] == 2 || reply[7] == 3 || reply[7] == 4 || reply[7] == 15 || reply[7] == 16)) {
+//                byte[] stripped = Arrays.copyOfRange(reply, 6, reply.length);
+//                return stripped;
+//            } else if (reply.length > 5 && (reply[5] == 5 || reply[5] == 6)) {
+//                byte[] stripped = Arrays.copyOfRange(reply, 4, reply.length);
+//                return stripped;
+//            } else {
+//                return null;
+//            }
+            
                 byte[] stripped = Arrays.copyOfRange(reply, 6, reply.length);
                 return stripped;
-            } else if (reply.length > 5 && (reply[5] == 5 || reply[5] == 6)) {
-                byte[] stripped = Arrays.copyOfRange(reply, 4, reply.length);
-                return stripped;
-            } else {
-                return null;
-            }
+                   
         } else if (typeModbus == TYPE_MODBUS_RTU && reply != null && reply.length > 2) {
             byte[] stripped = Arrays.copyOfRange(reply, 0, reply.length - 2);
             return stripped;
@@ -813,6 +814,15 @@ public class ModBus {
 //            return values;
 //        }
 //    }
+    
+    public static Integer getFromReplyUINT16(byte[] reply, int typeModbus){
+        byte[] strippedToData = stripReplyToDATA(reply, typeModbus);
+        if (strippedToData != null && strippedToData.length>1){
+            return ((strippedToData[0] & 0xff) << 8) | (strippedToData[1] & 0xff);
+        } else {
+            return null;
+        }
+    }
 
     /**
      * @return Current Identification of a MODBUS Request transaction.
@@ -848,11 +858,9 @@ public class ModBus {
     public static byte[] convertCommandToModbusType(byte[] command, int modbusType) {
         switch (modbusType) {
             case TYPE_MODBUS_RTU:
-                return applyCRC(command);
+                return applyCRC(command);            
             case TYPE_MODBUS_TCP_UDP:
                 return convertToTCP(command);
-            case TYPE_MODBUS_TCP_UDP_NO_FIXED_LENGTHS:
-                return convertToTCPNoFixedLength(command);
             case TYPE_MODBUS_OVER_TCP:
                 return convertToTCP(applyCRC(command));
             case TYPE_MODBUS_ASCII:
